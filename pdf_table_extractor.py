@@ -183,10 +183,34 @@ def extract_cbo_data(table):
     # For spending_appropriation, search across table rows
     for row in table:
         if any('Spending Subject to' in str(cell) for cell in row):
-            # Extract non-empty values from the row, excluding 'Spending Subject to'
-            values = [str(cell) for cell in row if cell and str(cell) not in ['', 'Spending Subject to']]
-            if len(values) == 3:
-                data['spending_appropriation'] = values
+            # Collect tokens and normalize "not estimated" into one token
+            tokens = [str(cell).strip() for cell in row if cell and str(cell).strip()]
+            # Find start of label and keep values after it
+            start = 0
+            for i, t in enumerate(tokens):
+                if 'Spending Subject to' in t:
+                    start = i + 1
+                    break
+            vals = tokens[start:]
+
+            # Merge "not" + "estimated" into "not estimated" if present
+            merged = []
+            i = 0
+            while i < len(vals):
+                if i + 1 < len(vals) and vals[i].lower() == 'not' and vals[i+1].lower() == 'estimated':
+                    merged.append('not estimated')
+                    i += 2
+                else:
+                    merged.append(vals[i])
+                    i += 1
+
+            # Prefer tokens that look like numeric/known value tokens
+            candidates = [t for t in merged if is_value_token(t) or t.lower() == 'not estimated']
+            if len(candidates) >= 3:
+                data['spending_appropriation'] = candidates[:3]
+            else:
+                # Fallback: take first three remaining tokens
+                data['spending_appropriation'] = merged[:3]
             break
 
     # Mandate effects
