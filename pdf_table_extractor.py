@@ -216,21 +216,41 @@ def extract_cbo_data(table):
             break
 
     # Mandate effects
-    for row in table:
+    for r, row in enumerate(table):
         for cell in row:
             if cell and 'intergovernmental' in str(cell):
-                # Collect all cells in the row that contain 'Yes' or 'No' and join them
-                values = [str(c).strip() for c in row if c and ('Yes' in str(c) or 'No' in str(c))]
-                if values:
-                    data['mandate_intergovernmental'] = ' '.join(values)
-                else:
-                    data['mandate_intergovernmental'] = 'No'
+                mandate_cells = []
+                # Same row after label
+                idx = row.index(cell)
+                for c in row[idx+1:]:
+                    cell_content = str(c).strip().replace('\n', ' ')
+                    if cell_content.startswith('Yes') or (cell_content.startswith('No') and cell_content != 'None'):
+                        mandate_cells.append(cell_content)
+                # Subsequent rows until private
+                for rr in range(r+1, len(table)):
+                    row_has_private = any('private-sector' in str(c) for c in table[rr])
+                    if row_has_private:
+                        break
+                    for cc in range(len(table[rr])):
+                        cell_content = str(table[rr][cc]).strip().replace('\n', ' ')
+                        if cell_content.startswith('Yes') or (cell_content.startswith('No') and cell_content != 'None'):
+                            mandate_cells.append(cell_content)
+                data['mandate_intergovernmental'] = ' '.join(mandate_cells) if mandate_cells else 'No'
             if cell and 'private-sector' in str(cell):
-                values = [str(c).strip() for c in row if c and ('Yes' in str(c) or 'No' in str(c))]
-                if values:
-                    data['mandate_private'] = ' '.join(values)
-                else:
-                    data['mandate_private'] = 'No'
+                mandate_cells = []
+                # Same row after label
+                idx = row.index(cell)
+                for c in row[idx+1:]:
+                    cell_content = str(c).strip().replace('\n', ' ')
+                    if cell_content.startswith('Yes') or (cell_content.startswith('No') and cell_content != 'None'):
+                        mandate_cells.append(cell_content)
+                # Subsequent rows
+                for rr in range(r+1, len(table)):
+                    for cc in range(len(table[rr])):
+                        cell_content = str(table[rr][cc]).strip().replace('\n', ' ')
+                        if cell_content.startswith('Yes') or (cell_content.startswith('No') and cell_content != 'None'):
+                            mandate_cells.append(cell_content)
+                data['mandate_private'] = ' '.join(mandate_cells) if mandate_cells else 'No'
 
     # Notes
     for row in table:
