@@ -136,23 +136,49 @@ def extract_cbo_data(table):
         for cell in row:
             if cell and isinstance(cell, str) and 'By Fiscal Year' in cell:
                 lines = cell.split('\n')
+                # Parse header
                 for line in lines:
-                    parts = line.split()
-                    if 'By Fiscal Year' in line and len(parts) >= 4:
-                        data['year_ranges'] = parts[-3:]
-                    elif 'Direct Spending (Outlays)' in line and len(parts) >= 4:
-                        data['direct_spending'] = parts[-3:]
-                    elif line.strip() == 'Revenues' or ('Revenues' in line and len(parts) >= 4):
+                    if 'By Fiscal Year' in line:
+                        parts = line.split()
                         if len(parts) >= 4:
-                            data['revenues'] = parts[-3:]
+                            data['year_ranges'] = parts[-3:]
+                        break
+                # Parse data lines with multi-line support
+                current_label = []
+                for line in lines[1:]:
+                    parts = line.split()
+                    if len(parts) >= 4 and all(p.isdigit() or p == '0' for p in parts[-3:]):
+                        # Label with numbers
+                        label = ' '.join(parts[:-3])
+                        nums = parts[-3:]
+                        if 'Direct Spending' in label:
+                            data['direct_spending'] = nums
+                        elif 'Revenues' in label:
+                            data['revenues'] = nums
+                        current_label = []
+                    elif len(parts) == 3 and all(p.isdigit() or p == '0' for p in parts):
+                        # Numbers for current_label
+                        if current_label:
+                            label = ' '.join(current_label)
+                            if 'Increase or Decrease' in label:
+                                data['deficit_change'] = parts
+                            current_label = []
+                    else:
+                        # Label part
+                        if current_label:
+                            current_label.extend(parts)
                         else:
-                            # Next line might have numbers
-                            pass
-                    elif 'Increase or Decrease' in line and len(parts) >= 4 and all(p.isdigit() or p == '0' for p in parts[-3:]):
-                        data['deficit_change'] = parts[-3:]
-                    elif 'Spending Subject to' in line and len(parts) >= 4 and all(p.isdigit() or p in ['*', 'not', 'estimated'] for p in parts[-3:]):
-                        data['spending_appropriation'] = parts[-3:]
+                            current_label = parts
                 break
+
+    # For spending_appropriation, search across table rows
+    for row in table:
+        if any('Spending Subject to' in str(cell) for cell in row):
+            # Extract non-empty values from the row, excluding 'Spending Subject to'
+            values = [str(cell) for cell in row if cell and str(cell) not in ['', 'Spending Subject to']]
+            if len(values) == 3:
+                data['spending_appropriation'] = values
+            break
 
     # Mandate effects
     for row in table:
