@@ -13,21 +13,25 @@ def extract_first_table(pdf_path):
     Returns:
         list: A list of lists representing the table, or None if no table found.
     """
-    table_settings_options = [
-        {},  # Default
-        {"vertical_strategy": "lines", "horizontal_strategy": "lines"},
-        {"vertical_strategy": "text", "horizontal_strategy": "text"},
-        {"snap_tolerance": 3},
-        {"join_tolerance": 3},
-    ]
+    try:
+        table_settings_options = [
+            {},  # Default
+            {"vertical_strategy": "lines", "horizontal_strategy": "lines"},
+            {"vertical_strategy": "text", "horizontal_strategy": "text"},
+            {"snap_tolerance": 3},
+            {"join_tolerance": 3},
+        ]
 
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            for settings in table_settings_options:
-                tables = page.extract_tables(table_settings=settings)
-                if tables:
-                    # Return the first table found
-                    return tables[0]
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                for settings in table_settings_options:
+                    tables = page.extract_tables(table_settings=settings)
+                    if tables:
+                        # Return the first table found
+                        return tables[0]
+    except Exception as e:
+        print(f"Error processing {pdf_path}: {e}")
+        return None
     return None
 
 def restructure_cbo_table(table):
@@ -112,29 +116,63 @@ def parse_table_rows(text):
             table.append([elem1, elem2, elem3, elem4])
     return table
 
-def table_to_dict(table):
+def extract_cbo_data(table):
     """
-    Convert a table (list of lists) to a dictionary if it has headers.
-
-    Args:
-        table (list): List of lists.
-
-    Returns:
-        dict: Dictionary with headers as keys, or the original table if no headers.
+    Extract specific CBO data from the table.
     """
-    if not table or len(table) < 2:
-        return table
-    headers = table[0]
-    data = table[1:]
-    # Assume headers are strings
-    if all(isinstance(h, str) for h in headers):
-        return [dict(zip(headers, row)) for row in data]
-    else:
-        return table
+    data = {}
+
+    # Find bill
+    for row in table:
+        for cell in row:
+            if cell and isinstance(cell, str) and cell.startswith('S. ') and ',' in cell:
+                data['bill'] = cell
+                break
+        if 'bill' in data:
+            break
+
+    # Find fiscal data from the "By Fiscal Year" cell
+    for row in table:
+        for cell in row:
+            if cell and isinstance(cell, str) and 'By Fiscal Year' in cell:
+                lines = cell.split('\n')
+                for line in lines:
+                    parts = line.split()
+                    if 'By Fiscal Year' in line and len(parts) >= 4:
+                        data['year_ranges'] = parts[-3:]
+                    elif 'Direct Spending (Outlays)' in line and len(parts) >= 4:
+                        data['direct_spending'] = parts[-3:]
+                    elif line.strip() == 'Revenues' or ('Revenues' in line and len(parts) >= 4):
+                        if len(parts) >= 4:
+                            data['revenues'] = parts[-3:]
+                        else:
+                            # Next line might have numbers
+                            pass
+                    elif 'Increase or Decrease' in line and len(parts) >= 4 and all(p.isdigit() or p == '0' for p in parts[-3:]):
+                        data['deficit_change'] = parts[-3:]
+                    elif 'Spending Subject to' in line and len(parts) >= 4 and all(p.isdigit() or p in ['*', 'not', 'estimated'] for p in parts[-3:]):
+                        data['spending_appropriation'] = parts[-3:]
+                break
+
+    # Mandate effects
+    for row in table:
+        for cell in row:
+            if cell and 'intergovernmental' in str(cell):
+                data['mandate_intergovernmental'] = 'No'  # Assuming based on context
+            if cell and 'private-sector' in str(cell):
+                data['mandate_private'] = 'No'
+
+    # Notes
+    for row in table:
+        for cell in row:
+            if cell and '* =' in str(cell):
+                data['notes'] = cell
+
+    return data
 
 def process_pdf(pdf_path, output_csv=None):
     """
-    Process a single PDF: extract first table and optionally save to CSV.
+    Process a single PDF: extract data and optionally save to CSV.
 
     Args:
         pdf_path (str): Path to the PDF.
@@ -145,39 +183,27 @@ def process_pdf(pdf_path, output_csv=None):
         print(f"No table found in {pdf_path}")
         return None
 
-    # Find the text containing "By Fiscal Year"
-    text = None
-    for row in table:
-        for cell in row:
-            if cell and isinstance(cell, str) and 'By Fiscal Year' in cell:
-                text = cell
-                break
-        if text:
-            break
-
-    table = restructure_cbo_table(table)
-
-    # Convert to dict if possible
-    table_dict = table_to_dict(table)
+    data = extract_cbo_data(table)
 
     if output_csv:
-        # Save to CSV
-        df = pd.DataFrame(table)
-        df.to_csv(output_csv, index=False)
-        print(f"Table extracted and saved to {output_csv}")
+        # Save the fiscal data to CSV
+        rows = []
+        if 'year_ranges' in data:
+            rows.append(['Year Ranges'] + data['year_ranges'])
+        if 'direct_spending' in data:
+            rows.append(['Direct Spending (Outlays)'] + data['direct_spending'])
+        if 'revenues' in data:
+            rows.append(['Revenues'] + data['revenues'])
+        if 'deficit_change' in data:
+            rows.append(['Increase or Decrease (-) in the Deficit'] + data['deficit_change'])
+        if 'spending_appropriation' in data:
+            rows.append(['Spending Subject to Appropriation (Outlays)'] + data['spending_appropriation'])
+        if rows:
+            df = pd.DataFrame(rows)
+            df.to_csv(output_csv, index=False, header=False)
+            print(f"Data saved to {output_csv}")
 
-    # Parse the table rows
-    if text:
-        new_table = parse_table_rows(text)
-        print("Parsed table:")
-        for row in new_table:
-            print(row)
-
-        if output_csv:
-            df2 = pd.DataFrame(new_table)
-            df2.to_csv(output_csv, mode='a', header=False, index=False)
-
-    return table_dict
+    return data
 
 def main():
     if len(sys.argv) < 2:
@@ -194,21 +220,33 @@ def main():
         if not pdf_files:
             print(f"No PDF files found in directory {pdf_path}")
             sys.exit(1)
+        results = []
         for pdf_file in pdf_files:
             full_path = os.path.join(pdf_path, pdf_file)
             print(f"Processing {pdf_file}...")
             result = process_pdf(full_path, None)  # Don't save individual CSVs
             if result:
-                print(f"Extracted table from {pdf_file}:")
-                if isinstance(result, list) and result and isinstance(result[0], dict):
-                    for row in result[:5]:  # Show first 5 rows
-                        print(row)
-                else:
-                    for row in result[:5]:
-                        print(row)
-                print("...")
+                result['pdf'] = pdf_file
+                results.append(result)
+                print(f"Extracted data from {pdf_file}")
+        print("All extracted data:")
+        for res in results:
+            print(res)
         if output_csv:
-            print(f"Note: Individual CSVs not saved when processing directory. Use single PDF for CSV output.")
+            # Save all data to CSV
+            all_rows = []
+            for res in results:
+                all_rows.append([res.get('pdf', '')])
+                if 'year_ranges' in res:
+                    all_rows.append(['Year Ranges'] + res['year_ranges'])
+                if 'direct_spending' in res:
+                    all_rows.append(['Direct Spending (Outlays)'] + res['direct_spending'])
+                # Add other rows as needed
+                all_rows.append([])  # Blank row between PDFs
+            if all_rows:
+                df = pd.DataFrame(all_rows)
+                df.to_csv(output_csv, index=False, header=False)
+                print(f"All data saved to {output_csv}")
     else:
         # Single PDF
         if not os.path.exists(pdf_path):
@@ -216,13 +254,8 @@ def main():
             sys.exit(1)
         result = process_pdf(pdf_path, output_csv)
         if result:
-            print("Extracted table:")
-            if isinstance(result, list) and result and isinstance(result[0], dict):
-                for row in result:
-                    print(row)
-            else:
-                for row in result:
-                    print(row)
+            print("Extracted data:")
+            print(result)
 
 if __name__ == "__main__":
     main()
