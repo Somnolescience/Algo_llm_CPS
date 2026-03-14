@@ -160,18 +160,20 @@ def extract_cbo_data(table):
                         # Label with values
                         label = ' '.join(parts[:-3])
                         nums = parts[-3:]
-                        if 'Direct Spending' in label:
+                        full_label = (' '.join(current_label) + ' ' + label).strip() if current_label else label
+                        if 'Direct Spending' in full_label:
                             data['direct_spending'] = nums
-                        elif 'Revenues' in label:
+                        elif 'Revenues' in full_label:
                             data['revenues'] = nums
+                        elif 'Increase or Decrease' in full_label:
+                            data['deficit_change'] = nums
                         current_label = []
                     elif len(parts) == 3 and all(is_value_token(p) for p in parts):
                         # Values for current_label
-                        if current_label:
-                            label = ' '.join(current_label)
-                            if 'Increase or Decrease' in label:
-                                data['deficit_change'] = parts
-                            current_label = []
+                        full_label = ' '.join(current_label) if current_label else ''
+                        if 'Increase or Decrease' in full_label:
+                            data['deficit_change'] = parts
+                        current_label = []
                     else:
                         # Label part
                         if current_label:
@@ -217,9 +219,18 @@ def extract_cbo_data(table):
     for row in table:
         for cell in row:
             if cell and 'intergovernmental' in str(cell):
-                data['mandate_intergovernmental'] = 'No'  # Assuming based on context
+                # Collect all cells in the row that contain 'Yes' or 'No' and join them
+                values = [str(c).strip() for c in row if c and ('Yes' in str(c) or 'No' in str(c))]
+                if values:
+                    data['mandate_intergovernmental'] = ' '.join(values)
+                else:
+                    data['mandate_intergovernmental'] = 'No'
             if cell and 'private-sector' in str(cell):
-                data['mandate_private'] = 'No'
+                values = [str(c).strip() for c in row if c and ('Yes' in str(c) or 'No' in str(c))]
+                if values:
+                    data['mandate_private'] = ' '.join(values)
+                else:
+                    data['mandate_private'] = 'No'
 
     # Notes
     for row in table:
