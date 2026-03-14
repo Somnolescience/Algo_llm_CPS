@@ -295,6 +295,38 @@ def process_pdf(pdf_path, output_csv=None):
 
     return data
 
+def write_csv_data(results, output_csv):
+    if not results:
+        print("No data to save.")
+        return
+
+    all_rows = []
+    all_rows.append(["BILL", "Budget Window", "Direct Spending (Outlays)", "Revenues", "Total Effect (Increase or (-)Decrease to Deficit", "Spending Subject to Appropriation (Outlays)", "Mandates", "Fiscal Category"])
+    for res in results:
+        bill_info = []
+        bill_info.append(res.get('bill', '*MISSING BILL*'))
+        bill_info.append(res.get('year_ranges', ['*MISSING YEAR RANGES*'])[-1])   # Just take the last year range
+        bill_info.append(res.get('direct_spending', ['*MISSING DIRECT SPENDING*'])[-1])  # Just take the last value
+        bill_info.append(res.get('revenues', ['*MISSING REVENUES*'])[-1])  # Just take the last value
+        bill_info.append(res.get('deficit_change', ['*MISSING DEFICIT CHANGE*'])[-1])  # Just take the last value
+        bill_info.append(res.get('spending_appropriation', ['*MISSING SPENDING SUBJECT TO APPROPRIATION*'])[-1])  # Just take the last value
+        mandate_info = ""
+        if 'mandate_intergovernmental' in res:
+            if 'Yes' in res['mandate_intergovernmental']:
+                mandate_info += (f"{res['mandate_intergovernmental']} / Intergovernmental   ")
+        if 'mandate_private' in res:
+            if 'Yes' in res['mandate_private']:
+                mandate_info += (f"{res['mandate_private']} / Private-sector")
+        bill_info.append(mandate_info or '*MISSING MANDATES*')
+        bill_info.append(res.get('notes', ''))
+        bill_info.append(res.get('pdf', '*MISSING PDF NAME*'))
+        all_rows.append(bill_info)
+
+    if output_csv and all_rows:
+        df = pd.DataFrame(all_rows)
+        df.to_csv(output_csv, index=False, header=False)
+        print(f"All data saved to {output_csv}")
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: python pdf_table_extractor.py <pdf_path_or_directory> [output_csv]")
@@ -322,30 +354,32 @@ def main():
         print("All extracted data:")
         for res in results:
             print(res)
-        if output_csv:
-            # Save all data to CSV
-            all_rows = []
-            for res in results:
-                all_rows.append([res.get('pdf', '')])
-                if 'year_ranges' in res:
-                    all_rows.append(['Year Ranges'] + res['year_ranges'])
-                if 'direct_spending' in res:
-                    all_rows.append(['Direct Spending (Outlays)'] + res['direct_spending'])
-                # Add other rows as needed
-                all_rows.append([])  # Blank row between PDFs
-            if all_rows:
-                df = pd.DataFrame(all_rows)
-                df.to_csv(output_csv, index=False, header=False)
-                print(f"All data saved to {output_csv}")
+        #if output_csv:
+        #    # Save all data to CSV
+        #    all_rows = []
+        #    for res in results:
+        #        all_rows.append([res.get('pdf', '')])
+        #        if 'year_ranges' in res:
+        #            all_rows.append(['Year Ranges'] + res['year_ranges'])
+        #        if 'direct_spending' in res:
+        #            all_rows.append(['Direct Spending (Outlays)'] + res['direct_spending'])
+        #        # Add other rows as needed
+        #        all_rows.append([])  # Blank row between PDFs
+        #    if all_rows:
+        #        df = pd.DataFrame(all_rows)
+        #        df.to_csv(output_csv, index=False, header=False)
+        #        print(f"All data saved to {output_csv}")
     else:
         # Single PDF
         if not os.path.exists(pdf_path):
             print(f"PDF file {pdf_path} does not exist.")
             sys.exit(1)
-        result = process_pdf(pdf_path, output_csv)
+        result = process_pdf(pdf_path)
         if result:
             print("Extracted data:")
             print(result)
+    write_csv_data([result] if result else results, output_csv)
+
 
 if __name__ == "__main__":
     main()
