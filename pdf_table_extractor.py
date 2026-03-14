@@ -1,7 +1,16 @@
+import re
 import pdfplumber
 import pandas as pd
 import sys
 import os
+
+VALUE_TOKEN_RE = re.compile(r"^(?:\d{1,3}(?:,\d{3})*|0|a|\*|no|no info)$", re.IGNORECASE)
+
+def is_value_token(tok: str) -> bool:
+    """Return True if the token looks like a valid fiscal table value."""
+    if not tok or not isinstance(tok, str):
+        return False
+    return bool(VALUE_TOKEN_RE.match(tok.strip()))
 
 def extract_first_table(pdf_path):
     """
@@ -74,14 +83,14 @@ def restructure_cbo_table(table):
     current_label = []
     for line in lines[1:]:
         parts = line.split()
-        if len(parts) >= 4 and all(p.isdigit() or p == '0' for p in parts[-3:]):
-            # Line has label and 3 numbers
+        if len(parts) >= 4 and all(is_value_token(p) for p in parts[-3:]):
+            # Line has label and 3 values
             label_str = ' '.join(parts[:-3])
             nums = parts[-3:]
             data.append([label_str, nums[0], nums[1], nums[2]])
             current_label = []
-        elif len(parts) == 3 and all(p.isdigit() or p == '0' for p in parts):
-            # Line has 3 numbers
+        elif len(parts) == 3 and all(is_value_token(p) for p in parts):
+            # Line has 3 values (continued label)
             if current_label:
                 label_str = ' '.join(current_label)
                 data.append([label_str, parts[0], parts[1], parts[2]])
@@ -147,8 +156,8 @@ def extract_cbo_data(table):
                 current_label = []
                 for line in lines[1:]:
                     parts = line.split()
-                    if len(parts) >= 4 and all(p.isdigit() or p == '0' for p in parts[-3:]):
-                        # Label with numbers
+                    if len(parts) >= 4 and all(is_value_token(p) for p in parts[-3:]):
+                        # Label with values
                         label = ' '.join(parts[:-3])
                         nums = parts[-3:]
                         if 'Direct Spending' in label:
@@ -156,8 +165,8 @@ def extract_cbo_data(table):
                         elif 'Revenues' in label:
                             data['revenues'] = nums
                         current_label = []
-                    elif len(parts) == 3 and all(p.isdigit() or p == '0' for p in parts):
-                        # Numbers for current_label
+                    elif len(parts) == 3 and all(is_value_token(p) for p in parts):
+                        # Values for current_label
                         if current_label:
                             label = ' '.join(current_label)
                             if 'Increase or Decrease' in label:
