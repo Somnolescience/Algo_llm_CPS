@@ -3,8 +3,10 @@ import pdfplumber
 import pandas as pd
 import sys
 import os
+import argparse
 
 VALUE_TOKEN_RE = re.compile(r"^(?:\d{1,3}(?:,\d{3})*|0|a|\*|no|no info)$", re.IGNORECASE)
+BUDGET_RANGE_RE = re.compile(r"^\d{4}(?:-\d{4})?$")
 
 def is_value_token(tok: str) -> bool:
     """Return True if the token looks like a valid fiscal table value."""
@@ -125,6 +127,75 @@ def parse_table_rows(text):
             table.append([elem1, elem2, elem3, elem4])
     return table
 
+def extract_budget_tokens_from_header(header_line: str) -> list[str]:
+    """Extract budget range tokens (e.g. 2026, 2026-2030, 2026-2035) from a header line."""
+    parts = header_line.split()
+    return [part for part in parts if BUDGET_RANGE_RE.match(part)]
+
+
+def parse_budget_window(window_label: str) -> int | None:
+    """Return window length in years for labels like 2026-2030; None for non-range labels."""
+    if not window_label or '-' not in window_label:
+        return None
+    try:
+        start_year, end_year = window_label.split('-', 1)
+        return int(end_year) - int(start_year) + 1
+    except ValueError:
+        return None
+
+
+def normalize_extracted_data(data: dict) -> dict:
+    """Populate explicit 5-year and 10-year fields from header-aligned values."""
+    year_ranges = data.get('year_ranges', [])
+    if not isinstance(year_ranges, list):
+        year_ranges = []
+
+    window_5y = None
+    window_10y = None
+    for budget_range in year_ranges:
+        span = parse_budget_window(budget_range)
+        if span == 5 and window_5y is None:
+            window_5y = budget_range
+        elif span == 10 and window_10y is None:
+            window_10y = budget_range
+
+    if window_10y is None and year_ranges:
+        window_10y = year_ranges[-1]
+    if window_5y is None and year_ranges:
+        for budget_range in year_ranges:
+            if budget_range != window_10y and '-' in budget_range:
+                window_5y = budget_range
+                break
+
+    if window_5y:
+        data['window_5y'] = window_5y
+    if window_10y:
+        data['window_10y'] = window_10y
+
+    metric_keys = ['direct_spending', 'revenues', 'deficit_change', 'spending_appropriation']
+    for key in metric_keys:
+        values = data.get(key, [])
+        if not isinstance(values, list) or not values:
+            continue
+
+        range_to_value = {}
+        for idx, budget_range in enumerate(year_ranges):
+            if idx < len(values):
+                range_to_value[budget_range] = values[idx]
+
+        if window_5y and window_5y in range_to_value:
+            data[f'{key}_5y'] = range_to_value[window_5y]
+        if window_10y and window_10y in range_to_value:
+            data[f'{key}_10y'] = range_to_value[window_10y]
+
+        if f'{key}_10y' not in data:
+            data[f'{key}_10y'] = values[-1]
+        if f'{key}_5y' not in data and values:
+            data[f'{key}_5y'] = values[0]
+
+    return data
+
+
 def extract_cbo_data(table):
     """
     Extract specific CBO data from the table.
@@ -148,9 +219,9 @@ def extract_cbo_data(table):
                 # Parse header
                 for line in lines:
                     if 'By Fiscal Year' in line:
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            data['year_ranges'] = parts[-3:]
+                        budget_tokens = extract_budget_tokens_from_header(line)
+                        if budget_tokens:
+                            data['year_ranges'] = budget_tokens[-3:]
                         break
                 # Parse data lines with multi-line support
                 current_label = []
@@ -258,7 +329,100 @@ def extract_cbo_data(table):
             if cell and '* =' in str(cell):
                 data['notes'] = cell
 
-    return data
+    return normalize_extracted_data(data)
+
+
+def format_money_token(tok: str) -> str:
+    """Format fiscal value tokens for sheet output using a single project convention."""
+    if tok is None:
+        return "*MISSING*"
+
+    token = str(tok).strip()
+    if not token:
+        return "*MISSING*"
+
+    if token == '*':
+        return '*$'
+
+    if token.lower() == 'not estimated':
+        return token
+
+    cleaned = token.replace(',', '')
+    if re.match(r"^\d+$", cleaned):
+        return f"${float(cleaned):.2f}"
+
+    return token
+
+
+def format_currency_value(value):
+    """Backward-compatible wrapper around format_money_token."""
+    return format_money_token(value)
+
+
+def get_last_value(res, key):
+    """Get the last token from a list-valued extraction field."""
+    values = res.get(key, [])
+    if isinstance(values, list) and values:
+        return values[-1]
+    return None
+
+
+def is_numeric_or_star_value(value) -> bool:
+    """Return True for integer-like tokens (including 0) or an asterisk marker."""
+    if value is None:
+        return False
+    token = str(value).strip()
+    if token == '*':
+        return True
+    return bool(re.match(r"^\d{1,3}(?:,\d{3})*$|^0$", token))
+
+
+def compute_mandate_flag(res: dict) -> str:
+    """Return Yes when either mandate field indicates Yes, otherwise No."""
+    intergov = str(res.get('mandate_intergovernmental', ''))
+    private = str(res.get('mandate_private', ''))
+    return 'Yes' if ('Yes' in intergov or 'Yes' in private) else 'No'
+
+
+# Backward-compatible alias
+compute_mandates_flag = compute_mandate_flag
+
+
+def format_ssta_for_sheet(res: dict) -> str:
+    """Format SStA value using sheet-specific 10-year / 5-year fallback rules."""
+    ten_year_value = res.get('spending_appropriation_10y')
+    five_year_value = res.get('spending_appropriation_5y')
+    five_year_range = res.get('window_5y', '*MISSING 5YR RANGE*')
+
+    if ten_year_value is None:
+        return '*MISSING SPENDING SUBJECT TO APPROPRIATION*'
+
+    if is_numeric_or_star_value(ten_year_value):
+        return format_money_token(ten_year_value)
+
+    if isinstance(ten_year_value, str) and ten_year_value.lower() == 'not estimated':
+        if is_numeric_or_star_value(five_year_value):
+            return f"not estimated ({five_year_value}$ {five_year_range})"
+        return 'not estimated'
+
+    return 'not estimated'
+
+
+def format_bill_input_row(res: dict) -> list[str]:
+    """Format extracted fields in spreadsheet column order for direct pasting."""
+    ten_year_range = res.get('window_10y') or get_last_value(res, 'year_ranges') or '*MISSING YEAR RANGE*'
+    direct_spending = format_money_token(res.get('direct_spending_10y'))
+    revenues = format_money_token(res.get('revenues_10y'))
+    deficit_change = format_money_token(res.get('deficit_change_10y'))
+    ssta = format_ssta_for_sheet(res)
+    mandates = compute_mandate_flag(res)
+
+    return [ten_year_range, direct_spending, revenues, deficit_change, ssta, mandates]
+
+
+def print_spreadsheet_row(res):
+    """Print one tab-delimited spreadsheet row for direct paste into sheets."""
+    print("\t".join(format_bill_input_row(res)))
 
 def process_pdf(pdf_path, output_csv=None):
     """
@@ -295,29 +459,50 @@ def process_pdf(pdf_path, output_csv=None):
 
     return data
 
+
+
+def get_default_output_csv(pdf_path: str) -> str:
+    """Return a default CSV path written at run termination when none is supplied."""
+    base_name = os.path.basename(os.path.normpath(pdf_path))
+    if os.path.isdir(pdf_path):
+        stem = base_name or 'pdf_directory'
+    else:
+        stem = os.path.splitext(base_name)[0] or 'pdf_extract'
+    return f"{stem}_bill_input_rows.csv"
+
+
+
+def extract_bill_number(bill_text: str) -> int | None:
+    """Extract the numeric bill identifier from strings like 'S. 472, ...'."""
+    if not bill_text:
+        return None
+    match = re.search(r"\bS\.\s*(\d+)\b", str(bill_text))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def sort_results_by_bill_number(results: list[dict]) -> list[dict]:
+    """Sort rows by bill number ascending; rows without a bill number come last."""
+    return sorted(
+        results,
+        key=lambda res: (
+            extract_bill_number(res.get('bill')) is None,
+            extract_bill_number(res.get('bill')) or float('inf'),
+            str(res.get('bill', '')),
+        ),
+    )
+
 def write_csv_data(results, output_csv):
     if not results:
         print("No data to save.")
         return
 
     all_rows = []
-    all_rows.append(["BILL", "Budget Window", "Direct Spending (Outlays)", "Revenues", "Total Effect (Increase or (-)Decrease to Deficit", "Spending Subject to Appropriation (Outlays)", "Mandates", "Fiscal Category"])
-    for res in results:
-        bill_info = []
-        bill_info.append(res.get('bill', '*MISSING BILL*'))
-        bill_info.append(res.get('year_ranges', ['*MISSING YEAR RANGES*'])[-1])   # Just take the last year range
-        bill_info.append(res.get('direct_spending', ['*MISSING DIRECT SPENDING*'])[-1])  # Just take the last value
-        bill_info.append(res.get('revenues', ['*MISSING REVENUES*'])[-1])  # Just take the last value
-        bill_info.append(res.get('deficit_change', ['*MISSING DEFICIT CHANGE*'])[-1])  # Just take the last value
-        bill_info.append(res.get('spending_appropriation', ['*MISSING SPENDING SUBJECT TO APPROPRIATION*'])[-1])  # Just take the last value
-        mandate_info = ""
-        if 'mandate_intergovernmental' in res:
-            if 'Yes' in res['mandate_intergovernmental']:
-                mandate_info += (f"{res['mandate_intergovernmental']} / Intergovernmental   ")
-        if 'mandate_private' in res:
-            if 'Yes' in res['mandate_private']:
-                mandate_info += (f"{res['mandate_private']} / Private-sector")
-        bill_info.append(mandate_info or '*MISSING MANDATES*')
+    sorted_results = sort_results_by_bill_number(results)
+    all_rows.append(["BILL", "Budget Window", "Direct Spending (Outlays)", "Revenues", "Total Effect (Increase or (-)Decrease to Deficit", "Spending Subject to Appropriation (Outlays)", "Mandates", "Fiscal Category", "PDF"])
+    for res in sorted_results:
+        bill_info = [res.get('bill', '*MISSING BILL*')] + format_bill_input_row(res)
         bill_info.append(res.get('notes', ''))
         bill_info.append(res.get('pdf', '*MISSING PDF NAME*'))
         all_rows.append(bill_info)
@@ -328,13 +513,23 @@ def write_csv_data(results, output_csv):
         print(f"All data saved to {output_csv}")
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: python pdf_table_extractor.py <pdf_path_or_directory> [output_csv]")
-        print("If pdf_path is a directory, all PDFs in it will be processed.")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(
+        description="Extract CBO table fields from one PDF or a directory of PDFs."
+    )
+    parser.add_argument("pdf_path", help="Path to a PDF file or directory containing PDFs.")
+    parser.add_argument("output_csv", nargs="?", default=None, help="Optional CSV output path.")
+    parser.add_argument(
+        "--spreadsheet-row",
+        action="store_true",
+        help="Print tab-delimited rows that can be pasted directly into Google Sheets.",
+    )
 
-    pdf_path = sys.argv[1]
-    output_csv = sys.argv[2] if len(sys.argv) > 2 else None
+    args = parser.parse_args()
+    pdf_path = args.pdf_path
+    output_csv = args.output_csv or get_default_output_csv(pdf_path)
+    spreadsheet_row = args.spreadsheet_row
+    result = None
+    results = []
 
     if os.path.isdir(pdf_path):
         # Process all PDFs in directory
@@ -342,7 +537,6 @@ def main():
         if not pdf_files:
             print(f"No PDF files found in directory {pdf_path}")
             sys.exit(1)
-        results = []
         for pdf_file in pdf_files:
             full_path = os.path.join(pdf_path, pdf_file)
             print(f"Processing {pdf_file}...")
@@ -351,6 +545,8 @@ def main():
                 result['pdf'] = pdf_file
                 results.append(result)
                 print(f"Extracted data from {pdf_file}")
+                if spreadsheet_row:
+                    print_spreadsheet_row(result)
         print("All extracted data:")
         for res in results:
             print(res)
@@ -378,7 +574,11 @@ def main():
         if result:
             print("Extracted data:")
             print(result)
-    write_csv_data([result] if result else results, output_csv)
+            if spreadsheet_row:
+                print_spreadsheet_row(result)
+    final_results = results if os.path.isdir(pdf_path) else ([result] if result else [])
+    write_csv_data(final_results, output_csv)
+    print(f"Spreadsheet CSV written to {output_csv}")
 
 
 if __name__ == "__main__":

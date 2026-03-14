@@ -22,7 +22,12 @@ python pdf_table_extractor.py path/to/your/file.pdf
 python pdf_table_extractor.py path/to/directory/
 ```
 
-To save the extracted table to a CSV file (for single PDF only):
+The script now always writes a CSV at run completion. If you do not provide an output path, it auto-generates one:
+
+- Single PDF: `<pdf_stem>_bill_input_rows.csv`
+- Directory input: `<directory_name>_bill_input_rows.csv`
+
+To override the CSV filename/path:
 
 ```
 python pdf_table_extractor.py path/to/your/file.pdf output.csv
