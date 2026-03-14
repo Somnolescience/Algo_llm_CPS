@@ -552,7 +552,8 @@ def main():
             print(result)
             if spreadsheet_row:
                 print_spreadsheet_row(result)
-    write_csv_data([result] if result else results, output_csv)
+    final_results = results if os.path.isdir(pdf_path) else ([result] if result else [])
+    write_csv_data(final_results, output_csv)
     print(f"Spreadsheet CSV written to {output_csv}")
 
 
