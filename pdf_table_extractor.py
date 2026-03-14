@@ -470,14 +470,38 @@ def get_default_output_csv(pdf_path: str) -> str:
         stem = os.path.splitext(base_name)[0] or 'pdf_extract'
     return f"{stem}_bill_input_rows.csv"
 
+
+
+def extract_bill_number(bill_text: str) -> int | None:
+    """Extract the numeric bill identifier from strings like 'S. 472, ...'."""
+    if not bill_text:
+        return None
+    match = re.search(r"\bS\.\s*(\d+)\b", str(bill_text))
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def sort_results_by_bill_number(results: list[dict]) -> list[dict]:
+    """Sort rows by bill number ascending; rows without a bill number come last."""
+    return sorted(
+        results,
+        key=lambda res: (
+            extract_bill_number(res.get('bill')) is None,
+            extract_bill_number(res.get('bill')) or float('inf'),
+            str(res.get('bill', '')),
+        ),
+    )
+
 def write_csv_data(results, output_csv):
     if not results:
         print("No data to save.")
         return
 
     all_rows = []
+    sorted_results = sort_results_by_bill_number(results)
     all_rows.append(["BILL", "Budget Window", "Direct Spending (Outlays)", "Revenues", "Total Effect (Increase or (-)Decrease to Deficit", "Spending Subject to Appropriation (Outlays)", "Mandates", "Fiscal Category", "PDF"])
-    for res in results:
+    for res in sorted_results:
         bill_info = [res.get('bill', '*MISSING BILL*')] + format_bill_input_row(res)
         bill_info.append(res.get('notes', ''))
         bill_info.append(res.get('pdf', '*MISSING PDF NAME*'))
