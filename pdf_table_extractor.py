@@ -70,13 +70,20 @@ def collect_phrase_flags_from_pdf(pdf_path: str) -> list[str]:
     return sorted(normalized_hits)
 
 
-def print_phrase_flag_report_json(
+def get_default_report_json(output_csv: str) -> str:
+    """Return report JSON path next to the output CSV."""
+    csv_dir = os.path.dirname(output_csv) or "."
+    csv_stem = os.path.splitext(os.path.basename(output_csv))[0] or "pdf_extract"
+    return os.path.join(csv_dir, f"{csv_stem}_phrase_flag_report.json")
+
+
+def write_phrase_flag_report_json(
     results: list[dict],
     input_path: str,
     output_csv: str,
     is_directory_input: bool,
-) -> None:
-    """Print a JSON phrase-flag report with basic run details."""
+) -> str:
+    """Write a JSON phrase-flag report with basic run details and return file path."""
     flagged = [res for res in results if res.get('flagged_phrases')]
     report = {
         "run_utc": datetime.now(timezone.utc).isoformat(),
@@ -94,8 +101,10 @@ def print_phrase_flag_report_json(
             for res in flagged
         ],
     }
-    print("Phrase Flag Report (JSON):")
-    print(json.dumps(report, indent=2))
+    report_path = get_default_report_json(output_csv)
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    return report_path
 
 
 def restructure_cbo_table(table):
@@ -633,12 +642,13 @@ def main():
                 print_spreadsheet_row(result)
     final_results = results if os.path.isdir(pdf_path) else ([result] if result else [])
     write_csv_data(final_results, output_csv)
-    print_phrase_flag_report_json(
+    report_path = write_phrase_flag_report_json(
         final_results,
         input_path=pdf_path,
         output_csv=output_csv,
         is_directory_input=os.path.isdir(pdf_path),
     )
+    print(f"Phrase flag report JSON written to {report_path}")
     print(f"Spreadsheet CSV written to {output_csv}")
 
 
