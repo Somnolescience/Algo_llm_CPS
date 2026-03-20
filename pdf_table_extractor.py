@@ -4,6 +4,8 @@ import pandas as pd
 import sys
 import os
 import argparse
+import json
+from datetime import datetime, timezone
 
 VALUE_TOKEN_RE = re.compile(r"^(?:\d{1,3}(?:,\d{3})*|0|a|\*|no|no info)$", re.IGNORECASE)
 BUDGET_RANGE_RE = re.compile(r"^\d{4}(?:-\d{4})?$")
@@ -68,17 +70,32 @@ def collect_phrase_flags_from_pdf(pdf_path: str) -> list[str]:
     return sorted(normalized_hits)
 
 
-def print_phrase_flag_report(results: list[dict]) -> None:
-    """Print a compact report of PDFs that contain one or more flagged phrases."""
+def print_phrase_flag_report_json(
+    results: list[dict],
+    input_path: str,
+    output_csv: str,
+    is_directory_input: bool,
+) -> None:
+    """Print a JSON phrase-flag report with basic run details."""
     flagged = [res for res in results if res.get('flagged_phrases')]
-    print("Phrase Flag Report:")
-    if not flagged:
-        print("  No flagged phrases found.")
-        return
-    for res in flagged:
-        pdf_name = res.get('pdf') or res.get('pdf_path') or '*UNKNOWN PDF*'
-        phrases = ", ".join(res.get('flagged_phrases', []))
-        print(f"  {pdf_name}: {phrases}")
+    report = {
+        "run_utc": datetime.now(timezone.utc).isoformat(),
+        "input_path": input_path,
+        "input_mode": "directory" if is_directory_input else "single_pdf",
+        "output_csv": output_csv,
+        "total_inputs_seen": len(results),
+        "flagged_input_count": len(flagged),
+        "flagged_inputs": [
+            {
+                "input": res.get('pdf') or res.get('pdf_path') or '*UNKNOWN PDF*',
+                "pdf_path": res.get('pdf_path'),
+                "phrases": res.get('flagged_phrases', []),
+            }
+            for res in flagged
+        ],
+    }
+    print("Phrase Flag Report (JSON):")
+    print(json.dumps(report, indent=2))
 
 
 def restructure_cbo_table(table):
@@ -616,7 +633,12 @@ def main():
                 print_spreadsheet_row(result)
     final_results = results if os.path.isdir(pdf_path) else ([result] if result else [])
     write_csv_data(final_results, output_csv)
-    print_phrase_flag_report(final_results)
+    print_phrase_flag_report_json(
+        final_results,
+        input_path=pdf_path,
+        output_csv=output_csv,
+        is_directory_input=os.path.isdir(pdf_path),
+    )
     print(f"Spreadsheet CSV written to {output_csv}")
 
 
