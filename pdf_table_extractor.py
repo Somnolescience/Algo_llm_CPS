@@ -8,8 +8,8 @@ import argparse
 VALUE_TOKEN_RE = re.compile(r"^(?:\d{1,3}(?:,\d{3})*|0|a|\*|no|no info)$", re.IGNORECASE)
 BUDGET_RANGE_RE = re.compile(r"^\d{4}(?:-\d{4})?$")
 FLAGGED_PHRASES = (
-    "increase net direct spending",
-    "increase on-budget deficits",
+    "would increase net direct spending",
+    "would increase on-budget deficits",
     "billion",
     "billions",
 )
