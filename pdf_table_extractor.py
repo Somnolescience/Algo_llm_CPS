@@ -4,9 +4,17 @@ import pandas as pd
 import sys
 import os
 import argparse
+import json
+from datetime import datetime, timezone
 
 VALUE_TOKEN_RE = re.compile(r"^(?:\d{1,3}(?:,\d{3})*|0|a|\*|no|no info)$", re.IGNORECASE)
 BUDGET_RANGE_RE = re.compile(r"^\d{4}(?:-\d{4})?$")
+FLAGGED_PHRASES = (
+    "would increase net direct spending",
+    "would increase on-budget deficits",
+    "billion",
+    "billions",
+)
 
 def is_value_token(tok: str) -> bool:
     """Return True if the token looks like a valid fiscal table value."""
@@ -44,6 +52,60 @@ def extract_first_table(pdf_path):
         print(f"Error processing {pdf_path}: {e}")
         return None
     return None
+
+def collect_phrase_flags_from_pdf(pdf_path: str) -> list[str]:
+    """Return flagged phrases found in the PDF text (case-insensitive)."""
+    normalized_hits: set[str] = set()
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text() or ""
+                lowered = text.lower()
+                for phrase in FLAGGED_PHRASES:
+                    if phrase in lowered:
+                        normalized_hits.add(phrase)
+    except Exception as e:
+        print(f"Warning: unable to scan phrase flags for {pdf_path}: {e}")
+        return []
+    return sorted(normalized_hits)
+
+
+def get_default_report_json(output_csv: str) -> str:
+    """Return report JSON path next to the output CSV."""
+    csv_dir = os.path.dirname(output_csv) or "."
+    csv_stem = os.path.splitext(os.path.basename(output_csv))[0] or "pdf_extract"
+    return os.path.join(csv_dir, f"{csv_stem}_phrase_flag_report.json")
+
+
+def write_phrase_flag_report_json(
+    results: list[dict],
+    input_path: str,
+    output_csv: str,
+    is_directory_input: bool,
+) -> str:
+    """Write a JSON phrase-flag report with basic run details and return file path."""
+    flagged = [res for res in results if res.get('flagged_phrases')]
+    report = {
+        "run_utc": datetime.now(timezone.utc).isoformat(),
+        "input_path": input_path,
+        "input_mode": "directory" if is_directory_input else "single_pdf",
+        "output_csv": output_csv,
+        "total_inputs_seen": len(results),
+        "flagged_input_count": len(flagged),
+        "flagged_inputs": [
+            {
+                "input": res.get('pdf') or res.get('pdf_path') or '*UNKNOWN PDF*',
+                "pdf_path": res.get('pdf_path'),
+                "phrases": res.get('flagged_phrases', []),
+            }
+            for res in flagged
+        ],
+    }
+    report_path = get_default_report_json(output_csv)
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    return report_path
+
 
 def restructure_cbo_table(table):
     """
@@ -438,6 +500,8 @@ def process_pdf(pdf_path, output_csv=None):
         return None
 
     data = extract_cbo_data(table)
+    data['flagged_phrases'] = collect_phrase_flags_from_pdf(pdf_path)
+    data['pdf_path'] = pdf_path
 
     if output_csv:
         # Save the fiscal data to CSV
@@ -578,6 +642,13 @@ def main():
                 print_spreadsheet_row(result)
     final_results = results if os.path.isdir(pdf_path) else ([result] if result else [])
     write_csv_data(final_results, output_csv)
+    report_path = write_phrase_flag_report_json(
+        final_results,
+        input_path=pdf_path,
+        output_csv=output_csv,
+        is_directory_input=os.path.isdir(pdf_path),
+    )
+    print(f"Phrase flag report JSON written to {report_path}")
     print(f"Spreadsheet CSV written to {output_csv}")
 
 
